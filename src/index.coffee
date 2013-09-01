@@ -23,7 +23,7 @@ module.exports = class JadeAngularJsCompiler
     @pretty = !!config.plugins?.jade?.pretty
     @doctype = config.plugins?.jade?.doctype or "5"
     @locals = config.plugins?.jade_angular?.locals or {}
-    @staticMask = config.plugins?.jade_angular?.static_mask or /index.jade/
+    @moduleDirs = config.plugins?.jade_angular?.modules or ['partials']
     @compileTrigger = sysPath.normalize @public + sysPath.sep + (config.paths?.jadeCompileTrigger or 'js/dontUseMe')
     @singleFile = !!config?.plugins?.jade_angular?.single_file
     @singleFileName = sysPath.join @public, (config?.plugins?.jade_angular?.single_file_name or "js/angular_templates.js")
@@ -75,25 +75,16 @@ module.exports = class JadeAngularJsCompiler
 
     return root
 
-  attachModuleNameToTemplate: (pair, assetsTree) ->
-    path = @removeFileNameFromPath pair.path
-
-    if assetsTree.length is 0
-      pair.module ="#{path[0]}.templates"
-      return
-
-    findedPath = []
-    node = assetsTree
-    _.each path, (v) ->
-      child = _.find node, (vv) -> vv.name is v
-      return if child is undefined
-
-      findedPath.push child.name
-      node = child.children
-
-    findedPath.push "templates"
-
-    pair.module = findedPath.join '.'
+  attachModuleNameToTemplate: (template) ->
+    module = _.chain(template.path)
+      .intersection(@moduleDirs)
+      .first()
+      .value()
+    if module?
+      template.module = _.first(template.path, _.indexOf(template.path, module) + 1)
+        .join('.')
+    else
+      template.module = null
 
   removeFileNameFromPath: (path) -> path[0..-2]
 
@@ -163,18 +154,18 @@ module.exports = class JadeAngularJsCompiler
         result: content @locals
 
   onCompile: (compiled) ->
-    preResult = @prepareResult compiled
+    assets = @prepareResult compiled
+    assets = _.each assets, (v) => @attachModuleNameToTemplate v
 
-    assets = _.filter preResult, (v) => @staticMask.test v.path
-    assetsTree = @parsePairsIntoAssetsTree assets
+    assetsStatic = _.filter assets, (v) -> !v.module
+    @writeStatic assetsStatic
 
-    @writeStatic assets
-
-    @writeModules _.chain(preResult)
-      .difference(assets)
-      .each((v) => @attachModuleNameToTemplate v, assetsTree)
+    modules = _.chain(assets)
+      .difference(assetsStatic)
       .each((v) -> v.path = v.path.join('/')) # concat items to virtual url
       .groupBy((v) -> v.module)
       .map((v, k) -> name: k, templates: v)
       .each((v) => @generateModuleFileName v)
       .value()
+    @writeModules modules
+
